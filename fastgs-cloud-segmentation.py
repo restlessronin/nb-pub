@@ -48,7 +48,7 @@ print(fastgs.__version__)
 # %%
 from fastai.vision.all import *
 
-from fastgs.geospatial.sentinel import *
+from fastgs.multispectral import *
 from fastgs.vision.testio import *
 from fastgs.vision.data import *
 from fastgs.vision.learner import *
@@ -125,7 +125,8 @@ def leaf_img_path_95(chn_id: str, tile_id: int) -> str:
 # We need to be able to check which set the patch belongs to
 
 # %%
-only95 = frozenset(pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_additional_to_38-cloud.csv").name)
+only95names = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_additional_to_38-cloud.csv").name
+only95 = frozenset(only95names)
 
 
 # %%
@@ -148,57 +149,43 @@ landsatDesc = MSDescriptor(["R","G","B","NIR"],[10,10,10,10],[1.0,1.0,1.0,1.0],{
 #
 # The third parameter is what allows multi-spectral visualization. It lists sets of 3 channels (or 1 channel) which can be used to produce "false-colour" RGB (or monochrome) images from the channels in our input.
 #
-# In this example, each ms tensor will produce two images, one "false-colour" with NIR, G, B (instead of R,G,B), and one monochrome using the "R" channel only.
+# In this example, each ms tensor will produce two images, one "false-colour" with NIR, G, B (instead of R,G,B), and another "true colour" using (R,G,B). We could also choose to display a true colour image.
 
 # %%
-landsat = MultiSpectral(
+landsat = MSData(
     landsatDesc,
     ["R","G","B","NIR"],
-    "GT",
-    [["NIR","G","B"],["R"]],
+    [["NIR","G","B"],["R","G","B"]],
     get_channel_filenames,
-    read_multichan_files,
-    read_mask_file
+    read_multichan_files
 )
 
-# %%
-mask_xform_block = TransformBlock(
-    type_tfms=[
-        partial(MultiSpectral.load_mask, landsat),
-        AddMaskCodes(codes=["not-clouds", "clouds"]),
-    ]
-)
+masks = MaskData("GT",get_channel_filenames,read_mask_file,["non-cloud","cloud"])
 
 # %%
-mc_xform_block = TransformBlock(
-    type_tfms=[
-        partial(MultiSpectral.load_image, landsat),
-    ]
-)
+landsat_pipeline=MSPipeline(landsat,masks)
 
 # %%
-db = DataBlock(
-    blocks=(mc_xform_block, mask_xform_block),
-    splitter=RandomSplitter(valid_pct=0.2, seed=107),
-)
+db = landsat_pipeline.create_data_block()
+
+# %% [markdown]
+# We will only use 200 images, since the purpose of this notebook is to demonstrate the fastgs pipeline.
 
 # %%
 nonempty = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_nonempty.csv").name
+nonempty200=nonempty[0:200]
 
 # %%
-db.summary(source=nonempty, bs=8)
+#db.summary(source=nonempty400, bs=8)
 
 # %%
-dl = db.dataloaders(source=nonempty, bs=8)
+dl = db.dataloaders(source=nonempty200, bs=8)
 
 # %%
 dl.show_batch(max_n=5,mskovl=False)
 
 # %%
-learner = unet_learner(
-    dl,resnet18,normalize=False,n_in=4,n_out=2,pretrained=True,
-    loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1)
-)
+learner = landsat_pipeline.create_unet_learner(dl,resnet18,pretrained=True,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
 
 # %%
 lrs = learner.lr_find()
