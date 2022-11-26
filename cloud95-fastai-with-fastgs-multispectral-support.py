@@ -49,7 +49,7 @@ print(fastgs.__version__)
 from fastai.vision.all import *
 
 from fastgs.multispectral import *
-from fastgs.vision.testio import *
+from fastgs.test.io import *
 from fastgs.vision.data import *
 from fastgs.vision.learner import *
 
@@ -142,17 +142,19 @@ def get_channel_filenames(chn_ids, tile_id):
 # Next we create a channel descriptor for the images. This lists all the possible channels ids for our multi-spectral source, and some values assocated with each channel (which are not very relevant in this example).
 
 # %%
-landsatDesc = MSDescriptor(["R","G","B","NIR"],[10,10,10,10],[1.0,1.0,1.0,1.0],{})
+landsatDesc = MSDescriptor.from_bands(["R","G","B","NIR"])
 
 # %% [markdown]
 # Next create the fastgs helper class. The first parameter is a list of the channel ids in our example in the order in which they will be loaded. Next is the id of the mask.
 #
 # The third parameter is what allows multi-spectral visualization. It lists sets of 3 channels (or 1 channel) which can be used to produce "false-colour" RGB (or monochrome) images from the channels in our input.
 #
-# In this example, each ms tensor will produce two images, one "false-colour" with NIR, G, B (instead of R,G,B), and another "true colour" using (R,G,B). We could also choose to display a true colour image.
+# In this example, each ms tensor will produce two images, one "false-colour" with NIR, G, B (instead of R,G,B), and another using (R,G,B). We could also choose to display individual bands as monochrome images.
+#
+# Set up data wrapper classes for images and masks
 
 # %%
-landsat = MSData(
+landsat_imgs = MSData.from_all(
     landsatDesc,
     ["R","G","B","NIR"],
     [["NIR","G","B"],["R","G","B"]],
@@ -160,38 +162,52 @@ landsat = MSData(
     read_multichan_files
 )
 
-masks = MaskData("GT",get_channel_filenames,read_mask_file,["non-cloud","cloud"])
-
-# %%
-landsat_pipeline=MSPipeline(landsat,masks)
-
-# %%
-db = landsat_pipeline.create_data_block()
+landsat_msks = MaskData("GT",get_channel_filenames,read_mask_file,["non-cloud","cloud"])
 
 # %% [markdown]
-# We will only use 200 images, since the purpose of this notebook is to demonstrate the fastgs pipeline.
+# add some augmentations
+
+# %%
+import albumentations as A
+
+# %%
+aug = A.Compose([
+    A.RandomRotate90(p=0.5),
+    A.HorizontalFlip(p=.5),
+    A.VerticalFlip(p=.5)
+])
+augs = MSAugment(train_aug=aug,valid_aug=aug)
+
+# %%
+landsat = FastGS(landsat_imgs,landsat_msks,augs)
+
+# %%
+db = landsat.create_data_block()
+
+# %% [markdown]
+# We will only use 100 images, since the purpose of this notebook is to demonstrate the fastgs pipeline
 
 # %%
 nonempty = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_nonempty.csv").name
-nonempty200=nonempty[0:200]
+small=nonempty[0:100]
 
 # %%
 #db.summary(source=nonempty400, bs=8)
 
 # %%
-dl = db.dataloaders(source=nonempty200, bs=8)
+dl = db.dataloaders(source=small, bs=8)
 
 # %%
 dl.show_batch(max_n=5,mskovl=False)
 
 # %%
-learner = landsat_pipeline.create_unet_learner(dl,resnet18,pretrained=True,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
+learner = landsat.create_unet_learner(dl,resnet18,pretrained=True,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
 
 # %%
 lrs = learner.lr_find()
 
 # %%
-learner.fine_tune(2,lrs.valley)
+learner.fine_tune(30,lrs.valley)
 
 # %%
 learner.show_results(max_n=5,mskovl=False)
