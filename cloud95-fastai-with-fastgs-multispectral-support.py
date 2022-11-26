@@ -139,7 +139,7 @@ def get_channel_filenames(chn_ids, tile_id):
 
 
 # %% [markdown]
-# Next we create a channel descriptor for the images. This lists all the possible channels ids for our multi-spectral source, and some values assocated with each channel (which are not very relevant in this example).
+# Next we create a channel descriptor for the images. This lists all the possible channels ids for our multi-spectral source.
 
 # %%
 landsatDesc = MSDescriptor.from_bands(["R","G","B","NIR"])
@@ -178,27 +178,35 @@ aug = A.Compose([
 ])
 augs = MSAugment(train_aug=aug,valid_aug=aug)
 
+# %% [markdown]
+# Now create the master wrapper class.
+
 # %%
 landsat = FastGS(landsat_imgs,landsat_msks,augs)
+
+# %% [markdown]
+# the wrapper class knows how to create a fastai DataBlock.
 
 # %%
 db = landsat.create_data_block()
 
 # %% [markdown]
-# We will only use 100 images, since the purpose of this notebook is to demonstrate the fastgs pipeline
+# We will only use 1000 images to create the DataLoader, since the purpose of this notebook is to demonstrate the fastgs pipeline.
 
 # %%
-nonempty = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_nonempty.csv").name
-small=nonempty[0:100]
+nonempty = pd.read_csv("/kaggle/input/38cloud-cloud-segmentation-in-satellite-images/training_patches_38-cloud_nonempty.csv").name
+print(len(nonempty))
+#nonempty = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_nonempty.csv").name
+small=nonempty[0:1000]
 
-# %%
 #db.summary(source=nonempty400, bs=8)
 
-# %%
 dl = db.dataloaders(source=small, bs=8)
 
-# %%
 dl.show_batch(max_n=5,mskovl=False)
+
+# %% [markdown]
+# the wrapper class also creates the unet learner
 
 # %%
 learner = landsat.create_unet_learner(dl,resnet18,pretrained=True,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
@@ -207,7 +215,7 @@ learner = landsat.create_unet_learner(dl,resnet18,pretrained=True,loss_func=Cros
 lrs = learner.lr_find()
 
 # %%
-learner.fine_tune(30,lrs.valley)
+learner.fine_tune(15,lrs.valley)
 
 # %%
 learner.show_results(max_n=5,mskovl=False)
