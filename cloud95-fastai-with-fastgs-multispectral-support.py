@@ -26,8 +26,6 @@ from __future__ import annotations
 # First install fastgs. It should automatically ensure the correct version of fastai.
 
 # %%
-# # %pip install -Uqq torch torchvision fastgs
-# # %pip show fastgs
 # %pip install -Uqq fastgs
 
 # %% [markdown]
@@ -102,6 +100,8 @@ def id_to_color_name(chn_id: str) -> str:
 
 # %% [markdown]
 # Next we have methods to construct file paths for the two data sets (38 cloud and 95 cloud)
+#
+# UPDATE: There seems to be a problem with some of the files in this dataset. I get IO errors when I try to run the learner on all files. It seems to be better if I only use one of the two datasets (I picked cloud 38, which is smaller and also seems to result in quicker training)
 
 # %%
 def get_input_38(stem: str) -> str:
@@ -125,17 +125,13 @@ def leaf_img_path_95(chn_id: str, tile_id: int) -> str:
 # We need to be able to check which set the patch belongs to
 
 # %%
-only95names = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_additional_to_38-cloud.csv").name
-only95 = frozenset(only95names)
-
+#only95names = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_additional_to_38-cloud.csv").name
+#only95 = frozenset(only95names)
 
 # %%
 def get_channel_filenames(chn_ids, tile_id):
     "Get list of all channel filenames for one tile idx"
-    if tile_id in only95:
-        return [get_input_95(leaf_img_path_95(x, tile_id)) for x in chn_ids]
-    else:
-        return [get_input_38(leaf_img_path_38(x, tile_id)) for x in chn_ids]
+    return [get_input_38(leaf_img_path_38(x, tile_id)) for x in chn_ids]
 
 
 # %% [markdown]
@@ -154,7 +150,7 @@ landsatDesc = MSDescriptor.from_bands(["R","G","B","NIR"])
 # Set up data wrapper classes for images and masks
 
 # %%
-landsat_imgs = MSData.from_all(
+landsat_imgs = MSData.from_files(
     landsatDesc,
     ["R","G","B","NIR"],
     [["NIR","G","B"],["R","G","B"]],
@@ -162,7 +158,7 @@ landsat_imgs = MSData.from_all(
     read_multichan_files
 )
 
-landsat_msks = MaskData("GT",get_channel_filenames,read_mask_file,["non-cloud","cloud"])
+landsat_msks = MaskData.from_files("GT",get_channel_filenames,read_mask_file,["non-cloud","cloud"])
 
 # %% [markdown]
 # add some augmentations
@@ -194,10 +190,13 @@ db = landsat.create_data_block()
 # We will only use 1000 images to create the DataLoader, since the purpose of this notebook is to demonstrate the fastgs pipeline.
 
 # %%
-nonempty = pd.read_csv("/kaggle/input/38cloud-cloud-segmentation-in-satellite-images/training_patches_38-cloud_nonempty.csv").name
-print(len(nonempty))
+#all_ex_95 = pd.read_csv("/kaggle/input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_additional_to_38-cloud.csv").name
+#nonempty_95 = pd.read_csv("/kaggle/input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_nonempty.csv").name
+#ne_ex_95 = list(set(all_ex_95) & set(nonempty_95))
+ne_ex_95 = pd.read_csv("/kaggle/input/38cloud-cloud-segmentation-in-satellite-images/training_patches_38-cloud_nonempty.csv").name
+print(len(ne_ex_95))
 #nonempty = pd.read_csv("../input/95cloud-cloud-segmentation-on-satellite-images/95-cloud_training_only_additional_to38-cloud/training_patches_95-cloud_nonempty.csv").name
-small=nonempty[0:1000]
+small=ne_ex_95[0:1000]
 
 #db.summary(source=nonempty400, bs=8)
 
@@ -214,8 +213,11 @@ learner = landsat.create_unet_learner(dl,resnet18,pretrained=True,loss_func=Cros
 # %%
 lrs = learner.lr_find()
 
+# %% [markdown]
+# Keep the training loop short to avoid IO errors.
+
 # %%
-learner.fine_tune(15,lrs.valley)
+learner.fine_tune(5,lrs.valley)
 
 # %%
 learner.show_results(max_n=5,mskovl=False)
