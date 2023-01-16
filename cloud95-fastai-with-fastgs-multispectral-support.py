@@ -14,6 +14,9 @@
 # ---
 
 # %%
+# %pip install -Uqq fastgs
+
+# %%
 from __future__ import annotations
 
 # %% [markdown]
@@ -24,9 +27,6 @@ from __future__ import annotations
 # The intention of this notebook is simply to demonstrate the use of fastgs to setup a multi-spectral fastai training pipeline. Other notebooks have already done a good job of explaining the data set and training methods. I assume the reader is generally familiar with fastai.
 #
 # First install fastgs. It should automatically ensure the correct version of fastai.
-
-# %%
-# %pip install -Uqq fastgs
 
 # %% [markdown]
 # Check versions.
@@ -172,13 +172,13 @@ aug = A.Compose([
     A.HorizontalFlip(p=.5),
     A.VerticalFlip(p=.5)
 ])
-augs = MSAugment(train_aug=aug,valid_aug=aug)
+augs = MSAugment.from_augs(train_aug=aug,valid_aug=aug)
 
 # %% [markdown]
 # Now create the master wrapper class.
 
 # %%
-landsat = FastGS(landsat_imgs,landsat_msks,augs)
+landsat = FastGS.for_training(landsat_imgs,landsat_msks,augs)
 
 # %% [markdown]
 # the wrapper class knows how to create a fastai DataBlock.
@@ -208,7 +208,7 @@ dl.show_batch(max_n=5,mskovl=False)
 # the wrapper class also creates the unet learner
 
 # %%
-learner = landsat.create_unet_learner(dl,resnet18,pretrained=True,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
+learner = landsat.create_learner(dl)
 
 # %%
 lrs = learner.lr_find()

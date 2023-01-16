@@ -28,6 +28,7 @@ print(fastgs.__version__)
 from fastai.vision.all import *
 from fastgs.multispectral import *
 from fastgs.vision.data import *
+from fastgs.vision.core import *
 from fastgs.vision.learner import *
 
 # %% [markdown]
@@ -162,7 +163,7 @@ get_ms_tensor(bands, iid)
 
 # %%
 sentinel2 = createSentinel2Descriptor()
-five_bands = MSData.from_delegate(
+five_bands = MSData.from_loader(
     sentinel2,
     bands,
     [["B04", "B03", "B02"],["B08"],["B10"]],
@@ -179,7 +180,7 @@ five_bands_img.show()
 # It appears that the brightening factors need to be higher for the RGB image, let's try 5 monochrome images.
 
 # %%
-bands_55 = MSData.from_delegate(
+bands_55 = MSData.from_loader(
     sentinel2,
     bands,
     [["B04"], ["B03"], ["B02"],["B08"],["B10"]],
@@ -219,7 +220,7 @@ def createSentinel2KappaSetDescriptor() -> MSDescriptor:
 sentinel2_KappaSet = createSentinel2KappaSetDescriptor()
 
 # %%
-five_bands_imgs = MSData.from_delegate(
+five_bands_imgs = MSData.from_loader(
     sentinel2_KappaSet,
     bands,
     [["B04", "B03", "B02"],["B08"],["B10"]],
@@ -246,7 +247,7 @@ read_mask("Label", iid)
 mask_codes=['UNDEFINED','CLEAR','CLOUD SHADOW','SEMI TRANSPARENT CLOUD','CLOUD','MISSING']
 
 # %%
-masks = MaskData.from_delegate("Label", read_mask, mask_codes)
+masks = MaskData.from_loader("Label", read_mask, mask_codes)
 
 # %%
 msk = masks.load_mask(iid)
@@ -264,13 +265,13 @@ aug = A.Compose([
     A.HorizontalFlip(p=.5),
     A.VerticalFlip(p=.5)
 ])
-augs = MSAugment(train_aug=aug,valid_aug=aug)
+augs = MSAugment.from_augs(train_aug=aug,valid_aug=aug)
 
 # %% [markdown]
 # create fastgs wrapper
 
 # %%
-fgs = FastGS(five_bands_imgs, masks, augs)
+fgs = FastGS.for_training(five_bands_imgs, masks, augs)
 
 # %% [markdown]
 # the datablock
@@ -285,7 +286,7 @@ dl = db.dataloaders(source=all_training_data, bs=8)
 dl.show_batch(max_n=5,mskovl=False)
 
 # %%
-learner = fgs.create_unet_learner(dl,resnet18,pretrained=False,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
+learner = fgs.create_learner(dl)
 
 # %%
 lrs = learner.lr_find()
@@ -294,8 +295,200 @@ lrs = learner.lr_find()
 learner.fit_one_cycle(25,lrs.valley)
 
 # %%
+# save model to disk
+learner.save("S2_cloud_model")
+
+# %%
 learner.show_results(max_n=5,mskovl=False)
 
 # %%
 interp = SegmentationInterpretation.from_learner(learner)
 interp.plot_top_losses(k=3,mskovl=False)
+
+# %%
+# import packages used for deaping with spatial raster data
+import rasterio as rio
+from tqdm.auto import tqdm
+import os
+from multiprocessing import Pool
+import numpy as np
+import matplotlib.pyplot as plt
+
+# %%
+# set the path to the test sentinel 2 scene
+l1c_safe_folder = Path('/kaggle/input/sentinel-2-l1c-cloud-example/S2B_MSIL1C_20211127T003659_N0301_R059_T55KBU_20211127T015218/S2B_MSIL1C_20211127T003659_N0301_R059_T55KBU_20211127T015218.SAFE')
+
+# %%
+# set the path to the vrt file, normaly we would make this with gdal, but installing gdal on Kaggle is difficult
+vrt_path = Path('/kaggle/input/sentinel-2-l1c-cloud-example/Stack.vrt')
+
+# %%
+# set the location to store our inference data
+output_dir = Path('/kaggle/working/s2_wokring_v2')
+output_dir.mkdir(exist_ok=True)
+
+# %%
+# set up some vars for storing data
+scene_name = l1c_safe_folder.name
+output_path = output_dir/scene_name
+tile_folder = output_path/'tiles'
+tile_folder.mkdir(exist_ok=True,parents=True)
+
+# %%
+# set the tile size in pixels
+tile_size_px = [512,512]
+
+# %%
+# these are the bands we need for the model
+required_bands = ["B04", "B03", "B02", "B08", "B10"]
+
+# %%
+# search fo the bands that we need
+bands_to_tile_paths = []
+for band in required_bands:
+     bands_to_tile_paths.append(str(list(l1c_safe_folder.rglob(f'*IMG_DATA/*{band}.jp2'))[0]))
+bands_to_tile_paths
+
+
+# %%
+# func to pad bottom and right most tiles to the full tile size
+def pad_array(array):
+    bands, y_shape, x_shape  = array.shape
+    x_missing =  tile_size_px[0] - x_shape
+    y_missing =  tile_size_px[1] - y_shape
+    if x_missing or y_missing:
+        array = np.pad(array,[(0, 0),(0, y_missing), (0, x_missing)])
+    return array
+
+
+# %%
+S2_scene = rio.open(vrt_path)
+S2_scene_meta = S2_scene.profile
+S2_scene_meta
+
+# %%
+# make a list of tiles by looping over raster height and width of the input scene
+tiles = []
+left = 0
+tile_count = 0
+while left < S2_scene_meta['width']:
+    top=0
+    while top < S2_scene_meta['height']:
+        tile_count += 1
+        name = f'part_{tile_count}.tif'
+        export_path = tile_folder/name
+        
+        tiles.append([left,top,export_path])
+        top += tile_size_px[1]
+    left += tile_size_px[0]
+print(len(tiles))
+tiles[1]
+
+# %%
+# cut out each tile from list
+for tile in tqdm(tiles):
+    win = rio.windows.Window(tile[0], tile[1], tile_size_px[0], tile_size_px[1])
+    win_data = S2_scene.read(window=win)
+    data_shape = win_data.shape
+    if data_shape[1] != tile_size_px[0] or data_shape[2] != tile_size_px[1]:
+        win_data = pad_array(win_data)
+    win_transform = S2_scene.window_transform(win)
+    meta = S2_scene.meta
+    meta['driver'] = 'GTiff'
+    meta['transform'] = win_transform
+    meta['width'] = win_data.shape[2]
+    meta['height'] = win_data.shape[1]
+    with rio.open(tile[2], 'w', **meta) as dst:
+        dst.write(win_data)
+
+# %%
+meta
+
+
+# %%
+# search for all tif files in img_dir, these are our tiles
+def get_inf_files_paths(img_dir):
+    return list(img_dir.rglob('*.tif'))
+
+
+# %%
+# get a count off all the tiles
+tiles = get_inf_files_paths(tile_folder)
+len(tiles)
+
+
+# %%
+# open image with rasterio and convert it into float range
+def get_ms_np_rio(bands,img_path):
+    return rio.open(img_path).read()/2**16
+
+def get_ms_tensor_rio(bands,img_path):
+    return Tensor(get_ms_np_rio(bands, img_path))
+
+
+# %%
+# create a fastgs data descriptor for our tiles
+def createSentinel2L1CDescriptor_inf() -> MSDescriptor:
+    return MSDescriptor.from_all(
+        required_bands,
+        [20,20,24,15,20],
+        [10,10,10,10,60],
+        {# https://gisgeography.com/sentinel-2-bands-combinations/
+            "natural_color": ["B04","B03","B02"]
+        }
+    )
+
+S2L1C_desc = createSentinel2L1CDescriptor_inf()
+
+# create a fastgs MSData object 
+S2L1C_bands_55 = MSData.from_loader(
+    S2L1C_desc,
+    required_bands,
+    [S2L1C_desc.rgb_combo["natural_color"],["B08"],["B10"]],
+    get_ms_tensor_rio
+)
+
+test_fgs = FastGS.for_inference(S2L1C_bands_55,mask_codes)
+
+# %%
+# open the first image and check the stats
+open_img = S2L1C_bands_55.load_image(tiles[0])
+print(f'Shape {open_img.shape}\nMin val {open_img.min()}\nMax val {open_img.max()}')
+
+# %%
+open_img.show();
+
+# %%
+# build a fastai DataBlock
+db = DataBlock(S2L1C_bands_55.create_xform_block())
+
+# %%
+# build a fastai dataloader
+dl = db.dataloaders(source=tiles, bs=5)
+
+# %%
+learner = test_fgs.load_learner("/kaggle/working/models/S2_cloud_model", dl)
+
+# %%
+test_dl = learner.dls.test_dl(test_items=tiles, bs=1)
+
+# %%
+# #!zip -r file.zip /kaggle/working
+
+# %%
+#from IPython.display import FileLink
+#FileLink(r'file.zip')
+
+# %%
+# show a batch, this does not work, not sure why?
+test_dl.show_batch(max_n=5)
+
+# %%
+preds = learner.get_preds(dl=test_dl,with_decoded=True)[0]
+
+# %%
+preds.shape
+
+# %%
+
+# %%

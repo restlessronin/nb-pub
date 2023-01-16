@@ -83,13 +83,13 @@ aug = A.Compose([
     A.HorizontalFlip(p=.5),
     A.VerticalFlip(p=.5)
 ])
-augs = MSAugment(train_aug=aug,valid_aug=aug)
+augs = MSAugment.from_augs(train_aug=aug,valid_aug=aug)
 
 # %% [markdown]
 # and then the pipeline object
 
 # %%
-allbands = FastGS(all_raw_bands,masks,augs)
+allbands = FastGS.for_training(all_raw_bands,masks,augs)
 
 # %% [markdown]
 # create the data block
@@ -108,7 +108,7 @@ dl = db.dataloaders(source=all_tile_idxs, bs=8)
 dl.show_batch(max_n=5,mskovl=False)
 
 # %%
-learner = allbands.create_unet_learner(dl,resnet18,pretrained=False,loss_func=CrossEntropyLossFlat(axis=1),metrics=Dice(axis=1))
+learner = allbands.create_learner(dl)
 
 # %%
 lrs = learner.lr_find()
